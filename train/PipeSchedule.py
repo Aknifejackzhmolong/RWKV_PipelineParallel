@@ -60,10 +60,10 @@ class PipeSchedule:
         x = P2pLayerEnd.apply(x)
         self.output_tensors.append(x.sum())
         return x, state.detach_()
-    def backward(self):
+    def backward(self,*args: Any, **kwargs: Any):
         x = self.output_tensors[0]
         self.output_tensors = self.output_tensors[1:]
-        x.backward()
+        x.backward(*args,**kwargs)
         # print(f'RANK[{self.rank_id}] backward')
     def train_with_gpipe(self,x,y,loss_fn):
         # todo: 未完成
@@ -75,14 +75,15 @@ class PipeSchedule:
             for i in range(batch_size):
                 x_out,state = self.forward(x,state)
                 loss = loss_fn(x_out,y[i])
-                loss.backward()
+                loss.backward(retain_graph=True)
+                self.output_tensors = []
         else:
             while start < batch_size:
                 parallel_size = min(batch_size - start,self.world_size)
                 for _ in range(parallel_size):
                     self.forward(x,state)
                 for _ in range(parallel_size):
-                    self.backward()
+                    self.backward(retain_graph=True)
                 start += parallel_size
     def train_with_interleaving(self,x,y,state,loss_fn):
         分段长度=self.model.args.token_limit
@@ -97,7 +98,7 @@ class PipeSchedule:
                 start,end = tuple(input_mask[i:i+2])
                 x_out,state = self.forward(x[None,start:end],state)
                 loss = loss_fn(x_out[0],y[start:end])
-                loss.backward()
+                loss.backward(retain_graph=True)
                 loss_total += loss.item()
         else:
             warm_up_size = min(batch_size,self.world_size) - 1 - self.rank_id
@@ -110,9 +111,9 @@ class PipeSchedule:
             for i in range(batch_size - warm_up_size):
                 start,end = tuple(input_mask[warm_up_size+i:warm_up_size+i+2])
                 self.forward(x[None,start:end],state)
-                self.backward()
+                self.backward(retain_graph=True)
             # cooldown step
             for i in range(warm_up_size):
-                self.backward()
+                self.backward(retain_graph=True)
         dist.broadcast(loss_total,self.world_size - 1)
         return loss_total

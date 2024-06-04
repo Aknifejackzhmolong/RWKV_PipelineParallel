@@ -31,7 +31,7 @@ class ModelArgs(Serializable):
     n_embd: int = 0
     world_size: int = None
     batch_size: int = 4
-    token_limit: int = 128
+    token_limit: int = 64
     onnx_opset: int = 18
     dtype: Union[Dict[str,str],str] = 'float32'
     parallel:bool = True
@@ -209,7 +209,7 @@ class RWKV_Block(nn.Module):
         """
         i0 = (2 + self.head_size) * i + 0
 
-        sx_lerp = torch.empty_like(x)
+        sx_lerp = torch.empty_like(x,dtype=self.datatype)
         sx_lerp[:, 0] = state[:, i0] - x[:, 0]
 
         # for l in range(1, L):
@@ -291,7 +291,7 @@ class RWKV_Block(nn.Module):
         batch_size, L, H, S = x.size(0), x.size(1), self.n_head, self.head_size
         i1 = (2 + S) * i + 1
         # 初始化结果张量
-        sx_lerp = torch.empty_like(x)
+        sx_lerp = torch.empty_like(x,dtype=self.datatype)
 
         # 计算初始插值
         sx_lerp[:, 0] = state[:, i1] - x[:, 0]
