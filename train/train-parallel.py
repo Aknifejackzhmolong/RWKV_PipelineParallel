@@ -74,6 +74,7 @@ def main(args:ModelArgs):
         dataloader = [(x,y)] * datasize
     model.train()
     state_init = init_state(model)
+    state_init.requires_grad = True
     with torch.autograd.set_detect_anomaly(True):
         with tqdm(dataloader,disable=(args.rank_id != 0)) as tbar:
             for x,y in tbar:
@@ -81,7 +82,7 @@ def main(args:ModelArgs):
                 y=y[0].cuda()
                 x,y = boardcast_iter(x,y)
                 optimizer.zero_grad()
-                state = state_init.clone().detach()
+                state = state_init.clone()
                 loss = wrapper.train_with_interleaving(x,y,state,criterion)
                 if loss is not None:
                     tbar.set_postfix(loss=loss.item())
@@ -113,6 +114,7 @@ def main(args:ModelArgs):
 def boardcast_iter(x, y):
     if args.prev_id is None:
         num_tok = torch.tensor([len(x)]).cuda()
+        print(num_tok)
         dist.broadcast(num_tok,0)
     else:
         num_tok = torch.tensor([0]).cuda()

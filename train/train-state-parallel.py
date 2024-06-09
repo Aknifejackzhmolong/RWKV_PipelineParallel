@@ -59,19 +59,24 @@ def main(args:ModelArgs):
     if args.rank_id == 0:
         dataset = TextDataset(args.DATASET_PATH,tokenizer)
         dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
-        datasize = torch.tensor([len(dataloader)]).cuda()
+        batch_size = 0
+        for data in dataset.data_all:
+            batch_size += len(data) // args.token_limit
+            if len(data) % args.token_limit > 1:
+                batch_size += 1
+        datasize = torch.tensor([len(dataloader),batch_size]).cuda()
     else:
-        datasize = torch.tensor([0]).cuda()
+        datasize = torch.tensor([0,0]).cuda()
         dataloader = None
     wrapper = PipeSchedule(model)
     # 根据rank为0的进程广播tensor
     dist.broadcast(datasize, 0)  # 其他进程接收广播的tensor
-    datasize = datasize.item()
+    datasize,batch_size = datasize[0].item(),datasize[1].item()
     if dataloader is None:
         x = y = torch.tensor([0])
         dataloader = [(x,y)] * datasize
     state_init, gather_list = init_state(model)
-    state_init.requrire_grad = True
+    state_init.requires_grad = True
     optimizer = torch.optim.AdamW([state_init], lr=1.0)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2, eta_min=0.01, last_epoch=-1)
     criterion = nn.CrossEntropyLoss()
@@ -82,11 +87,11 @@ def main(args:ModelArgs):
         model.eval()
         warm_up_size = args.world_size - 1 - args.rank_id
         warm_up_size = max(0,warm_up_size)
-        with tqdm(dataloader,disable=(args.rank_id < args.world_size - 1)) as tbar:
+        with tqdm(generator(args,dataloader),total=batch_size+warm_up_size,disable=(args.rank_id < args.world_size - 1)) as tbar:
             last_list = [False]
             state = state_init.clone()
             loss_total = torch.tensor([0.0],dtype=wrapper.model.datatype).cuda()
-            for step,x,y,last in generator(args,tbar):
+            for step,x,y,last in tbar:
                 if wrapper.next_id is None:
                     x_out,state = wrapper.forward(x[None,:],state)
                     loss = criterion(x_out[0],y)
@@ -99,7 +104,7 @@ def main(args:ModelArgs):
                     if step < warm_up_size:
                         # warmup step
                         wrapper.forward(x[None,:],state)
-                    elif x is not None:
+                    elif step < batch_size:
                         # 1f1b step
                         wrapper.forward(x[None,:],state)
                         wrapper.backward(retain_graph=True)
@@ -146,7 +151,7 @@ def boardcast_iter(x, y):
     return x,y
 
 
-def generator(args, loader):
+def generator(args:ModelArgs, loader):
     warm_up_size = args.world_size - 1 - args.rank_id
     warm_up_size = max(0,warm_up_size)
     分段长度 = args.token_limit
