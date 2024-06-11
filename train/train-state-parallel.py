@@ -55,10 +55,6 @@ def main(args:ModelArgs):
     print("Done.")
 
     file_path = args.DATASET_PATH  # 替换为你的文本文件路径
-    # 设置续写的初始字符串和参数
-    optimizer = torch.optim.Adam(model.parameters())
-    criterion = nn.CrossEntropyLoss()
-    start_time = time.time()
     if args.rank_id == 0:
         dataset = TextDataset(file_path,tokenizer)
         dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
@@ -73,11 +69,14 @@ def main(args:ModelArgs):
     if dataloader is None:
         x = y = torch.tensor([0])
         dataloader = [(x,y)] * datasize
-    model.train()
+    model.eval()
+    # 设置续写的初始字符串和参数
+    criterion = nn.CrossEntropyLoss()
     state_init, gather_list = init_state(model)
     state_init.requires_grad = True
     optimizer = torch.optim.AdamW([state_init], lr=1.0)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2, eta_min=0.01, last_epoch=-1)
+    start_time = time.time()
     with torch.autograd.set_detect_anomaly(True):
         with tqdm(dataloader,disable=(args.rank_id < args.world_size - 1)) as tbar:
             for x,y in tbar:
@@ -112,7 +111,7 @@ def main(args:ModelArgs):
 def boardcast_iter(x, y):
     if args.prev_id is None:
         num_tok = torch.tensor([len(x)]).cuda()
-        print(num_tok)
+        # print(num_tok)
         dist.broadcast(num_tok,0)
     else:
         num_tok = torch.tensor([0]).cuda()
