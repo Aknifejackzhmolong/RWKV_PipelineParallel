@@ -22,7 +22,7 @@ from tqdm import tqdm
 import json
 from train.PipeSchedule import PipeSchedule
 class TextDataset(Dataset):
-    def __init__(self,file_path:str,tokenizer):
+    def __init__(self, file_path,tokenizer):
         """
         Args:
             x (list[list[int]]): 预处理后的文本数据，每个样本是一个由单词索引组成的列表。
@@ -33,8 +33,7 @@ class TextDataset(Dataset):
             for line in file:
                 data = json.loads(line)
                 texts=data["text"]
-                token_list = (tokenizer.encode(texts)[0]+[0])
-                data_all.append(token_list)
+                data_all.append([tokenizer.encode(texts)[0]+[0]][0])
         self.data_all = data_all
 
     def __len__(self):
@@ -55,93 +54,65 @@ def main(args:ModelArgs):
     tokenizer = RWKV_TOKENIZER(args.TOKENIZER_PATH)
     print("Done.")
 
+    file_path = args.DATASET_PATH  # 替换为你的文本文件路径
     # 设置续写的初始字符串和参数
+    optimizer = torch.optim.Adam(model.parameters())
+    criterion = nn.CrossEntropyLoss()
+    start_time = time.time()
     if args.rank_id == 0:
-        dataset = TextDataset(args.DATASET_PATH,tokenizer)
+        dataset = TextDataset(file_path,tokenizer)
         dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
-        batch_size = 0
-        for data in dataset.data_all:
-            batch_size += len(data) // args.token_limit
-            if len(data) % args.token_limit > 1:
-                batch_size += 1
-        datasize = torch.tensor([len(dataloader),batch_size]).cuda()
+        datasize = torch.tensor([len(dataloader)]).cuda()
     else:
-        datasize = torch.tensor([0,0]).cuda()
+        datasize = torch.tensor([0]).cuda()
         dataloader = None
     wrapper = PipeSchedule(model)
     # 根据rank为0的进程广播tensor
     dist.broadcast(datasize, 0)  # 其他进程接收广播的tensor
-    datasize,batch_size = datasize[0].item(),datasize[1].item()
+    datasize = datasize.item()
     if dataloader is None:
         x = y = torch.tensor([0])
         dataloader = [(x,y)] * datasize
+    model.train()
     state_init, gather_list = init_state(model)
     state_init.requires_grad = True
     optimizer = torch.optim.AdamW([state_init], lr=1.0)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2, eta_min=0.01, last_epoch=-1)
-    criterion = nn.CrossEntropyLoss()
-    print(f"RANK[{args.rank_id}] state_size:{state_init.size()}") # 这里打印状态的形状
-    torch.cuda.synchronize()    # 开始计时
-    start_time = time.time()
     with torch.autograd.set_detect_anomaly(True):
-        model.eval()
-        warm_up_size = args.world_size - 1 - args.rank_id
-        warm_up_size = max(0,warm_up_size)
-        with tqdm(generator(args,dataloader),total=batch_size+warm_up_size,disable=(args.rank_id < args.world_size - 1)) as tbar:
-            last_list = [False]
-            state = state_init.clone()
-            loss_total = torch.tensor([0.0],dtype=wrapper.model.datatype).cuda()
-            for step,x,y,last in tbar:
-                if wrapper.next_id is None:
-                    x_out,state = wrapper.forward(x[None,:],state)
-                    loss = criterion(x_out[0],y)
-                    loss.backward(retain_graph=True)
-                    loss_total[0] = loss.item()
-                    del wrapper.output_tensors[0]
-                    last_list = [last]
-                else:
-                    last_list += [last]
-                    if step < warm_up_size:
-                        # warmup step
-                        wrapper.forward(x[None,:],state)
-                    elif step < batch_size:
-                        # 1f1b step
-                        wrapper.forward(x[None,:],state)
-                        wrapper.backward(retain_graph=True)
-                        del last_list[0]
-                    else:
-                        # cooldown step
-                        wrapper.backward(retain_graph=True)
-                        del last_list[0]
-                tbar.set_postfix(avg_loss=loss_total.item(), lr=optimizer.param_groups[0]['lr'])
-                if last_list[0]:
-                    scheduler.step()
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    if args.device == 'cuda':
-                        torch.cuda.empty_cache()
-                    elif args.device == 'musa':
-                        torch.musa.empty_cache()
-                if last:
-                    state = state_init.clone()
+        with tqdm(dataloader,disable=(args.rank_id < args.world_size - 1)) as tbar:
+            for x,y in tbar:
+                x=x[0].cuda()
+                y=y[0].cuda()
+                x,y = boardcast_iter(x,y)
+                optimizer.zero_grad()
+                state = state_init.clone()
+                loss = wrapper.train_with_gpipe(x,y,state,criterion)
+                if loss is not None:
+                    tbar.set_postfix(loss=loss.item())
+                optimizer.step()
+                scheduler.step()
+                if args.device == 'cuda':
+                    torch.cuda.empty_cache()
+                elif args.device == 'musa':
+                    torch.musa.empty_cache()
 
     # 同步GPU执行位置
     torch.cuda.synchronize()
     end_time = time.time()
-
     # 计算并打印程序运行时间
     execution_time = end_time - start_time
     if args.rank_id == 0:
-        dist.gather(state_init,gather_list=gather_list,dst=0)
-        state_init = torch.concatenate(gather_list,dim=1)
+        dist.gather(state, gather_list=gather_list, dst=0)
+        state_init = torch.concatenate(gather_list, dim=1)
         model.save_state(state_init, "weight/state-trained-latest.pth")
     else:
-        dist.gather(state_init,dst=0)
-    print(f"RANK[{args.rank_id}]程序运行时间：{execution_time:.2f}秒\n",end='')
+        dist.gather(state, dst=0)
+    print(f"RANK[{args.rank_id}]程序运行时间：{execution_time:.2f}秒\n", end='')
 
 def boardcast_iter(x, y):
     if args.prev_id is None:
         num_tok = torch.tensor([len(x)]).cuda()
+        print(num_tok)
         dist.broadcast(num_tok,0)
     else:
         num_tok = torch.tensor([0]).cuda()
@@ -149,36 +120,6 @@ def boardcast_iter(x, y):
         x = y = torch.zeros((num_tok,)).long().cuda()
     dist.broadcast(y, 0)
     return x,y
-
-
-def generator(args:ModelArgs, loader):
-    warm_up_size = args.world_size - 1 - args.rank_id
-    warm_up_size = max(0,warm_up_size)
-    分段长度 = args.token_limit
-    num_tok = torch.tensor([0]).cuda()
-    step = 0
-    for x, y in loader:
-        x = x[0].cuda()
-        y = y[0].cuda()
-        if args.prev_id is None:
-            num_tok[0] = len(x)
-            dist.broadcast(num_tok, 0)
-        else:
-            dist.broadcast(num_tok, 0)
-            x = y = torch.zeros((num_tok,)).long().cuda()
-        dist.broadcast(y, 0)
-        input_mask = torch.arange(torch.ceil((num_tok - 1) / 分段长度).item(), dtype=torch.long)
-        input_mask = input_mask * 分段长度
-        for i in range(len(input_mask) - 1):
-            start = input_mask[i]
-            end = input_mask[i + 1]
-            yield step,x[start:end], y[start:end], False
-            step += 1
-        yield step,x[input_mask[-1]:], y[input_mask[-1]:], True
-        step += 1
-    for i in range(warm_up_size):
-        yield step, None, None, False
-        step += 1
 
 def init_state(model:RWKV_RNN) -> torch.Tensor:
     slice_size = model.block_num * (2 + model.head_size)
@@ -194,6 +135,7 @@ def init_state(model:RWKV_RNN) -> torch.Tensor:
     else:
         dist.scatter(state, src=0)
     return state, scatter_list
+
 def init_process(args:ModelArgs):
     """ Initialize the distributed environment. """
     os.environ['MASTER_ADDR'] = '127.0.0.1'
