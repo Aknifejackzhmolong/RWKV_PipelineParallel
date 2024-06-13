@@ -34,6 +34,19 @@ We are very happy to support various hardware devices, including but not limited
 4. 修改 `main.py` 文件的 `MODEL_NAME` 参数。
 5. 执行 `torchrun --nproc-per-node 3 train/train-parallel.py`，即可看到流水并行训练效果。
 
+## 流水并行（pipeline parallel）使用方法
+1. 克隆仓库 `git clone -b pipeline https://github.com/yuunnn-w/RWKV_Pytorch.git`
+2. 执行 `cd RWKV_Pytorch` 进入仓库目录，执行 `pip install -r requirements.txt` 安装依赖。
+3. 下载 RWKV6 模型，官方仓库地址：[BlinkDL/rwkv-6-world](https://huggingface.co/BlinkDL/rwkv-6-world/tree/main)，将模型权重放置在`weight`文件夹中。
+4. 修改 `train/params.json` 文件的 `MODEL_NAME` 参数。
+5. 执行 `torchrun --nproc-per-node 3 train/train-parallel.py`开始训练。
+
+## 并行策略
+本项目参考`Megatron-LM`实现了`GPipe`和`Interleaving`两种并行策略
+* 当数据集中样本长度较长，需要将样本分段训练时使用`GPipe`策略
+* 当数据集中样本长度较短，可以不分段训练时使用`Interleaving`策略可以一直保持高效的流水并行
+* 当数据集中样本长度有长有短时，可以分成两个数据集分别用`GPipe`和`Interleaving`两种并行策略训练
+
 **Usage**
 1. Clone the repository: `git clone -b pipeline https://github.com/yuunnn-w/RWKV_Pytorch.git`
 2. Navigate to the repository directory: `cd RWKV_Pytorch`, then install the dependencies: `pip install -r requirements.txt`.
