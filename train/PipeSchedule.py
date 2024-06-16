@@ -9,21 +9,28 @@ class P2pLayerBegin(torch.autograd.Function):
     next_id = None
     prev_id = None
     @staticmethod
-    def forward(ctx, x):
+    def forward(ctx, x: torch.Tensor):
         ctx.save_for_backward(x)
-        ctx.g = torch.zeros_like(x)
+        ctx.g = None
         if P2pLayerBegin.prev_id is not None:
             dist.recv(x,src=P2pLayerBegin.prev_id)
         single = torch.tensor([0.0],dtype=torch.float,requires_grad=True)
         return x,single
     @staticmethod
-    def backward(ctx, grad_outputs,single):
-        ctx.g = ctx.g + grad_outputs
+    def backward(ctx, grad_outputs: torch.Tensor, single: torch.Tensor):
+        if single > 0:
+            if ctx.g is not None:
+                grad_outputs = ctx.g.cuda() + grad_outputs
+        else:
+            if ctx.g is None:
+                ctx.g = grad_outputs.cpu()
+            else:
+                ctx.g = ctx.g + grad_outputs.cpu()
         # pd = P2pLayerBegin.prev_id
         # pd = 0 if pd is None else (pd + 1)
         # print(f'rank[{pd}] backward state grad dispatch {single}')
         if P2pLayerBegin.prev_id is not None and single > 0:
-            dist.send(ctx.g,dst=P2pLayerBegin.prev_id)
+            dist.send(grad_outputs,dst=P2pLayerBegin.prev_id)
             # print(f'rank[{pd}] backward state grad dispatch end')
         return grad_outputs
 class OffloadLayer(torch.autograd.Function):
