@@ -15,6 +15,47 @@ from simple_parsing.helpers import Serializable
 from dataclasses import dataclass
 from src.model_utils import RWKV_x060
 
+
+@torch.jit.script
+def recurrent_forward(s: torch.Tensor, a: torch.Tensor, w: torch.Tensor, L: int):
+    state_s = torch.zeros_like(a)
+    state_s[:, 0] = s
+    for l in torch.arange(L - 1):
+        s = torch.add(w[:, l] * s, a[:, l])
+        state_s[:, l + 1] = s  # 循环赋值
+    s = torch.add(w[:, -1] * s, a[:, -1])
+    return state_s,s
+
+@torch.jit.script
+def recurrent_backward(grad_output: torch.Tensor, state_s: torch.Tensor, w: torch.Tensor, L: int):
+    w.reciprocal_() # w倒数
+    w[torch.isinf(w)] = 0
+    state_s.reciprocal_()
+    state_s[torch.isinf(state_s)] = 0
+    loop = L - 1 - torch.arange(L)
+    for l in loop:
+        s = grad_output[:, l + 1] * w[:,l]   # 循环赋值
+        grad_output[:, l].add_(s)
+    grad_first = grad_output[:,0]
+    grad_a = grad_output[:,1:]
+    grad_w = grad_a * state_s
+    return grad_first,grad_a,grad_w
+class RecurrentSum(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, s: torch.Tensor, a: torch.Tensor, w: torch.Tensor, L: int):
+        state_s,last_s = recurrent_forward(s,a,w,L)
+        ctx.save_for_backward(state_s.cpu(),w.cpu())
+        return state_s,last_s
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor, grad_last: torch.Tensor):
+        state_s,w = ctx.saved_tensors
+        state_s,w = state_s.cuda(),w.cuda()
+        L = len(grad_output[0])
+        grad_output = torch.concatenate([grad_output,grad_last[:,None]],dim=1)
+        grad_first,grad_a,grad_w = recurrent_backward(grad_output,state_s,w,L)
+        return grad_first,grad_a,grad_w,None
+
+
 @dataclass
 class ModelArgs(Serializable):
     MODEL_NAME: str = './weight/0.1-1/rwkv-final'
@@ -330,15 +371,16 @@ class RWKV_Block(nn.Module):
         s = state[:, (2+S)*i+2:(2+S)*(i+1)].view(batch_size, H, S, S)
         a = k @ v # a: [batch_size, L, H, S, S]
 
-        state_s = torch.empty(batch_size, L, H, S, S, dtype=self.datatype, device=x.device) #初始化state_s的结果张量
-        state_s[:, 0] = s #把第一个a_{t-1, j}赋值给state_s
+        # state_s = torch.empty(batch_size, L, H, S, S, dtype=self.datatype, device=x.device) #初始化state_s的结果张量
+        # state_s[:, 0] = s #把第一个a_{t-1, j}赋值给state_s
 
 
-        for l in range(L-1):
-            s = a[:, l] + w[:, l] * s.clone() #这里计算出state_s的值.clone()
-            state_s[:, l+1] = s # 循环赋值
+        # for l in range(L-1):
+        #     s = a[:, l] + w[:, l] * s.clone() #这里计算出state_s的值.clone()
+        #     state_s[:, l+1] = s # 循环赋值
+        state_s,s = RecurrentSum.apply(s,a,w,L)
 
-        s = a[:, -1] + w[:, -1] * s #这里计算出最后一个state的值赋值给传入的state
+        # s = a[:, -1] + w[:, -1] * s #这里计算出最后一个state的值赋值给传入的state
         state[:, (2+S)*i+2:(2+S)*(i+1)] = s.view(batch_size, S, -1)
 
         x = r @ (self.att_time_faaaa * a + state_s)

@@ -105,7 +105,6 @@ class PipeSchedule:
         # print(f'RANK[{self.rank_id}] backward end')
         del self.output_tensors[0]
     def train_with_gpipe(self,x,y,state,loss_fn):
-        # todo: 未完成
         分段长度=self.model.args.token_limit
         num_tok = torch.tensor([len(x)])
         input_mask = torch.arange(torch.ceil((num_tok - 1) / 分段长度).item() + 1,dtype=torch.long) * 分段长度
