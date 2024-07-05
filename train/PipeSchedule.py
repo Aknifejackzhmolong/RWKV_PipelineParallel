@@ -96,7 +96,7 @@ class PipeSchedule:
         x_out = P2pLayerEnd.apply(x_out,single)
         # print(f'RANK[{self.rank_id}] forward end')
         self.output_tensors.append(x_out.sum())
-        return x_out,state_out#.detach_()
+        return x_out,state_out#.detach()
     def backward(self,*args: Any, **kwargs: Any):
         # TODO: 废弃的方法，只能用在没有state存储之前epoch计算图的情况
         x = self.output_tensors[0]

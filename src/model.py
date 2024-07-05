@@ -29,16 +29,21 @@ def recurrent_forward(s: torch.Tensor, a: torch.Tensor, w: torch.Tensor, L: int)
 @torch.jit.script
 def recurrent_backward(grad_output: torch.Tensor, state_s: torch.Tensor, w: torch.Tensor, L: int):
     w.reciprocal_() # w倒数
-    w[torch.isinf(w)] = 0
     state_s.reciprocal_()
-    state_s[torch.isinf(state_s)] = 0
     loop = L - 1 - torch.arange(L)
     for l in loop:
         s = grad_output[:, l + 1] * w[:,l]   # 循环赋值
+        # 梯度裁剪防止梯度爆炸
+        s[torch.isnan(s)] = 0
+        s[s > 1e9] = 0
+        s[s < -1e9] = 0
         grad_output[:, l].add_(s)
     grad_first = grad_output[:,0]
     grad_a = grad_output[:,1:]
     grad_w = grad_a * state_s
+    grad_w[torch.isnan(grad_w)] = 0
+    grad_w[grad_w > 1e9] = 0
+    grad_w[grad_w < -1e9] = 0
     return grad_first,grad_a,grad_w
 class RecurrentSum(torch.autograd.Function):
     @staticmethod
@@ -72,7 +77,7 @@ class ModelArgs(Serializable):
     n_embd: int = 0
     world_size: int = None
     batch_size: int = 4
-    token_limit: int = 64
+    token_limit: int = 128
     onnx_opset: int = 18
     dtype: Union[Dict[str,str],str] = 'float32'
     parallel:bool = True
@@ -381,7 +386,7 @@ class RWKV_Block(nn.Module):
         state_s,s = RecurrentSum.apply(s,a,w,L)
 
         # s = a[:, -1] + w[:, -1] * s #这里计算出最后一个state的值赋值给传入的state
-        state[:, (2+S)*i+2:(2+S)*(i+1)] = s.view(batch_size, S, -1)
+        # state[:, (2+S)*i+2:(2+S)*(i+1)] = s.view(batch_size, S, -1)
 
         x = r @ (self.att_time_faaaa * a + state_s)
         # self.att_time_faaaa: [32, 64, 1]
