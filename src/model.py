@@ -28,22 +28,13 @@ def recurrent_forward(s: torch.Tensor, a: torch.Tensor, w: torch.Tensor, L: int)
 
 @torch.jit.script
 def recurrent_backward(grad_output: torch.Tensor, state_s: torch.Tensor, w: torch.Tensor, L: int):
-    w.reciprocal_() # w倒数
-    state_s.reciprocal_()
     loop = L - 1 - torch.arange(L)
     for l in loop:
         s = grad_output[:, l + 1] * w[:,l]   # 循环赋值
-        # 梯度裁剪防止梯度爆炸
-        s[torch.isnan(s)] = 0
-        s[s > 1e9] = 0
-        s[s < -1e9] = 0
         grad_output[:, l].add_(s)
     grad_first = grad_output[:,0]
     grad_a = grad_output[:,1:]
     grad_w = grad_a * state_s
-    grad_w[torch.isnan(grad_w)] = 0
-    grad_w[grad_w > 1e9] = 0
-    grad_w[grad_w < -1e9] = 0
     return grad_first,grad_a,grad_w
 class RecurrentSum(torch.autograd.Function):
     @staticmethod
