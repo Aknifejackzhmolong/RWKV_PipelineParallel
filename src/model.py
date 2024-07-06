@@ -48,7 +48,8 @@ def recurrent_backward(grad_output: torch.Tensor, state_s: torch.Tensor, w: torc
 class RecurrentSum(torch.autograd.Function):
     @staticmethod
     def forward(ctx, s: torch.Tensor, a: torch.Tensor, w: torch.Tensor, L: int):
-        state_s,last_s = recurrent_forward(s,a,w,L)
+        with torch.no_grad():
+            state_s,last_s = recurrent_forward(s,a,w,L)
         ctx.save_for_backward(state_s.cpu(),w.cpu())
         return state_s,last_s
     @staticmethod
@@ -57,7 +58,8 @@ class RecurrentSum(torch.autograd.Function):
         state_s,w = state_s.cuda(),w.cuda()
         L = len(grad_output[0])
         grad_output = torch.concatenate([grad_output,grad_last[:,None]],dim=1)
-        grad_first,grad_a,grad_w = recurrent_backward(grad_output,state_s,w,L)
+        with torch.no_grad():
+            grad_first,grad_a,grad_w = recurrent_backward(grad_output,state_s,w,L)
         return grad_first,grad_a,grad_w,None
 
 

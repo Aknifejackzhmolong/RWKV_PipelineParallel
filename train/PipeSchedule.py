@@ -11,21 +11,12 @@ class P2pLayerBegin(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor):
         ctx.save_for_backward(x)
-        ctx.g = None
         if P2pLayerBegin.prev_id is not None:
             dist.recv(x,src=P2pLayerBegin.prev_id)
         single = torch.tensor([0.0],dtype=torch.float,requires_grad=True)
         return x,single
     @staticmethod
     def backward(ctx, grad_outputs: torch.Tensor, single: torch.Tensor):
-        if single > 0:
-            if ctx.g is not None:
-                grad_outputs = ctx.g.cuda() + grad_outputs
-        else:
-            if ctx.g is None:
-                ctx.g = grad_outputs.cpu()
-            else:
-                ctx.g = ctx.g + grad_outputs.cpu()
         # pd = P2pLayerBegin.prev_id
         # pd = 0 if pd is None else (pd + 1)
         # print(f'rank[{pd}] backward state grad dispatch {single}')
@@ -35,23 +26,33 @@ class P2pLayerBegin(torch.autograd.Function):
         return grad_outputs
 class OffloadLayer(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, run_func, x, state):
+    def forward(ctx, run_func, x, state, single):
         ctx.run_func = run_func
+        ctx.g = None
         ctx.save_for_backward(x.cpu(),state.cpu())
         with torch.no_grad():
             x_out, state_out = run_func(x, state)
-        return x_out,state_out
+        return x_out,state_out,single
     @staticmethod
-    def backward(ctx, x_grad, state_grad):
-        x, state = ctx.saved_tensors
-        x, state = x.cuda(), state.cuda()
-        if P2pLayerBegin.prev_id is not None:
-            x.requires_grad = True
-        state.requires_grad = True
-        with torch.enable_grad():
-            x_out, state_out = ctx.run_func(x, state.clone())
-        torch.autograd.backward((x_out,state_out),(x_grad, state_grad))
-        return (None,x.grad,state.grad)
+    def backward(ctx, x_grad, state_grad, single):
+        if single > 0:
+            if ctx.g is not None:
+                state_grad = ctx.g.cuda() + state_grad
+            x, state = ctx.saved_tensors
+            x, state = x.cuda(), state.cuda()
+            if P2pLayerBegin.prev_id is not None:
+                x.requires_grad = True
+            state.requires_grad = True
+            with torch.enable_grad():
+                x_out, state_out = ctx.run_func(x, state.clone())
+            torch.autograd.backward((x_out,state_out),(x_grad, state_grad))
+            return (None,x.grad,state.grad, single)
+        else:
+            if ctx.g is None:
+                ctx.g = state_grad.cpu()
+            else:
+                ctx.g = ctx.g + state_grad.cpu()
+            return None,None,None,single
 class P2pLayerEnd(torch.autograd.Function):
     next_id = None
     prev_id = None
@@ -91,7 +92,7 @@ class PipeSchedule:
         # print(f'RANK[{self.rank_id}] forward begin')
         x,single = P2pLayerBegin.apply(x)
         # x_out,state_out = self.model.forward_parallel(x, state)
-        x_out,state_out = OffloadLayer.apply(self.model.forward_parallel, x, state)
+        x_out,state_out,single = OffloadLayer.apply(self.model.forward_parallel, x, state, single)
         # x_out,state_out = torch.utils.checkpoint.checkpoint(self.model.forward_parallel, x, state)
         x_out = P2pLayerEnd.apply(x_out,single)
         # print(f'RANK[{self.rank_id}] forward end')
