@@ -374,10 +374,10 @@ class RWKV_Block(nn.Module):
         # for l in range(L-1):
         #     s = a[:, l] + w[:, l] * s.clone() #这里计算出state_s的值.clone()
         #     state_s[:, l+1] = s # 循环赋值
+        # s = a[:, -1] + w[:, -1] * s #这里计算出最后一个state的值赋值给传入的state
         state_s,s = RecurrentSum.apply(s,a,w,L)
 
-        # s = a[:, -1] + w[:, -1] * s #这里计算出最后一个state的值赋值给传入的state
-        # state[:, (2+S)*i+2:(2+S)*(i+1)] = s.view(batch_size, S, -1)
+        state[:, (2+S)*i+2:(2+S)*(i+1)] = s.view(batch_size, S, -1)
 
         x = r @ (self.att_time_faaaa * a + state_s)
         # self.att_time_faaaa: [32, 64, 1]
