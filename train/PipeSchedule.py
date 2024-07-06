@@ -35,24 +35,23 @@ class OffloadLayer(torch.autograd.Function):
         return x_out,state_out,single
     @staticmethod
     def backward(ctx, x_grad, state_grad, single):
-        if single > 0:
-            if ctx.g is not None:
-                state_grad = ctx.g.cuda() + state_grad
-            x, state = ctx.saved_tensors
-            x, state = x.cuda(), state.cuda()
-            if P2pLayerBegin.prev_id is not None:
-                x.requires_grad = True
-            state.requires_grad = True
-            with torch.enable_grad():
-                x_out, state_out = ctx.run_func(x, state.clone())
-            torch.autograd.backward((x_out,state_out),(x_grad, state_grad))
-            return (None,x.grad,state.grad, single)
-        else:
+        if single == 0:
             if ctx.g is None:
                 ctx.g = state_grad.cpu()
             else:
                 ctx.g = ctx.g + state_grad.cpu()
             return None,None,None,single
+        if ctx.g is not None:
+            state_grad = ctx.g.cuda() + state_grad
+        x, state = ctx.saved_tensors
+        x, state = x.cuda(), state.cuda()
+        if P2pLayerBegin.prev_id is not None:
+            x.requires_grad = True
+        state.requires_grad = True
+        with torch.enable_grad():
+            x_out, state_out = ctx.run_func(x, state.clone())
+        torch.autograd.backward((x_out, state_out), (x_grad, state_grad))
+        return (None, x.grad, state.grad, single)
 class P2pLayerEnd(torch.autograd.Function):
     next_id = None
     prev_id = None
