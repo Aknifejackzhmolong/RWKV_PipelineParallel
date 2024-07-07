@@ -6,7 +6,7 @@
 ###############################################################
 from flask import Flask, request, Response, jsonify
 from flask import stream_with_context
-from src.model import RWKV_RNN
+from src.model import RWKV_RNN,ModelArgs
 from src.model_utils import device_checker, device_specific_empty_cache
 from src.sampler import sample_logits, apply_penalties
 from src.rwkv_tokenizer import RWKV_TOKENIZER
@@ -30,21 +30,12 @@ def add_cors_headers(response):
 # 初始化模型和分词器
 def init_model():
     # 模型参数配置
-    args = {
-        # 模型文件的名字，pth结尾的权重文件。
-        'MODEL_NAME': './weight/RWKV-x060-World-3B-v2.1-20240417-ctx4096.pth',
-        'vocab_size': 65536,  # 词表大小
-        'device': 'cpu',  # 运行设备，可选'cpu','cuda','musa','npu'
-        'onnx_opset': '18',  # 非必要不要使用 <18 的值，会引起数值不稳定
-        'parrallel': 'True',  # 是否使用并行计算
-        # 如果不加载state权重，请置为''
-        'STATE_NAME': './weight/rwkv-x060-chn_single_round_qa-3B-20240516-ctx2048.pth'
-        # 请务必保证模型权重和State权重对应，这里暂时不做检查
-    }
-    args = device_checker(args)
-    device = args['device']
-    assert device in ['cpu', 'cuda', 'musa', 'npu', 'xpu']
-    print(f"Device: {device}")
+    with open("train/params.json", "r") as f:
+        args = ModelArgs.from_dict(json.load(f))
+        args = device_checker(args)
+        device = args.device
+        assert device in ['cpu', 'cuda', 'musa', 'npu', 'xpu']
+        print(f"Device: {device}")
 
 
     print("Loading model and tokenizer...")
@@ -54,7 +45,7 @@ def init_model():
 
     tokenizer = RWKV_TOKENIZER("asset/rwkv_vocab_v20230424.txt")
     print("Done")
-    print(f"Model name: {args.get('MODEL_NAME').split('/')[-1]}")
+    print(f"Model name: {args.MODEL_NAME.split('/')[-1]}")
     return model, tokenizer, global_state, device, args
     
 def format_messages_to_prompt(messages):
@@ -101,7 +92,7 @@ def generate_text(prompt: str, temperature=1.5, top_p=0.1, max_tokens=2048, pres
     prompt_tokens = len(encoded_input[0])
     stop_token = tokenizer.encode(stop)[0]
     
-    if args['parrallel'] == "True":
+    if args.parallel:
         with torch.no_grad():
             token_out, state = model.forward_parallel_slices(token, state, slice_len=512)
             out = token_out[:, -1]
@@ -162,7 +153,7 @@ def generate_text_stream(prompt: str, temperature=1.5, top_p=0.1, max_tokens=204
     prompt_tokens = len(encoded_input[0])
 
     try:
-        if args['parrallel'] == "True":
+        if args.parallel:
             with torch.no_grad():
                 token_out, state = model.forward_parallel_slices(token, state, slice_len=512)
                 out = token_out[:, -1]  # 取最后一个生成的token
@@ -252,6 +243,15 @@ def generate_text_stream(prompt: str, temperature=1.5, top_p=0.1, max_tokens=204
 def clear_cache():
     device_specific_empty_cache(args)
 
+# 处理 OPTIONS 请求
+@app.route('/v1/models', methods=['GET'])
+def model_request():
+    return jsonify(dict(
+        object='list',
+        data=[
+            dict(id='rwkv',object='model')
+        ]
+    ))
 # 处理 OPTIONS 请求
 @app.route('/v1/chat/completions', methods=['OPTIONS'])
 def options_request():
