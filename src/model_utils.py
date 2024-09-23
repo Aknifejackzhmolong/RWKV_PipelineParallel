@@ -17,16 +17,16 @@ class RWKV_Tmix_x060(nn.Module):
         self.args = args
         self.layer_id = layer_id
 
-        self.head_size = args['head_size_a']
-        self.n_head = args['dim_att'] // self.head_size
-        assert args['dim_att'] % self.n_head == 0
+        self.head_size = args.head_size_a
+        self.n_head = args.dim_att // self.head_size
+        assert args.dim_att % self.n_head == 0
 
         with torch.no_grad():
-            ratio_0_to_1 = layer_id / (args['n_layer'] - 1)  # 0 to 1
-            ratio_1_to_almost0 = 1.0 - (layer_id / args['n_layer'])  # 1 to ~0
-            ddd = torch.ones(1, 1, args['n_embd'])
-            for i in range(args['n_embd']):
-                ddd[0, 0, i] = i / args['n_embd']
+            ratio_0_to_1 = layer_id / (args.n_layer - 1)  # 0 to 1
+            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layer)  # 1 to ~0
+            ddd = torch.ones(1, 1, args.n_embd)
+            for i in range(args.n_embd):
+                ddd[0, 0, i] = i / args.n_embd
 
             # fancy time_mix
             self.time_maa_x = nn.Parameter(1.0 - torch.pow(ddd, ratio_1_to_almost0))
@@ -37,33 +37,33 @@ class RWKV_Tmix_x060(nn.Module):
             self.time_maa_g = nn.Parameter(1.0 - torch.pow(ddd, 0.5 * ratio_1_to_almost0))
 
             D_MIX_LORA = 32 # generate TIME_MIX for w,k,v,r,g
-            self.time_maa_w1 = nn.Parameter(torch.zeros(args['n_embd'], D_MIX_LORA*5))
-            self.time_maa_w2 = nn.Parameter(torch.zeros(5, D_MIX_LORA, args['n_embd']).uniform_(-0.01, 0.01))
+            self.time_maa_w1 = nn.Parameter(torch.zeros(args.n_embd, D_MIX_LORA*5))
+            self.time_maa_w2 = nn.Parameter(torch.zeros(5, D_MIX_LORA, args.n_embd).uniform_(-0.01, 0.01))
 
             # fancy time_decay
-            decay_speed = torch.ones(args['dim_att'])
-            for n in range(args['dim_att']):
-                decay_speed[n] = -6 + 5 * (n / (args['dim_att'] - 1)) ** (0.7 + 1.3 * ratio_0_to_1)
-            self.time_decay = nn.Parameter(decay_speed.reshape(1,1,args['dim_att']))
+            decay_speed = torch.ones(args.dim_att)
+            for n in range(args.dim_att):
+                decay_speed[n] = -6 + 5 * (n / (args.dim_att - 1)) ** (0.7 + 1.3 * ratio_0_to_1)
+            self.time_decay = nn.Parameter(decay_speed.reshape(1,1,args.dim_att))
 
             D_DECAY_LORA = 64
-            self.time_decay_w1 = nn.Parameter(torch.zeros(args['n_embd'], D_DECAY_LORA))
-            self.time_decay_w2 = nn.Parameter(torch.zeros(D_DECAY_LORA, args['dim_att']).uniform_(-0.01, 0.01))
+            self.time_decay_w1 = nn.Parameter(torch.zeros(args.n_embd, D_DECAY_LORA))
+            self.time_decay_w2 = nn.Parameter(torch.zeros(D_DECAY_LORA, args.dim_att).uniform_(-0.01, 0.01))
 
-            tmp = torch.zeros(args['dim_att'])
-            for n in range(args['dim_att']):
+            tmp = torch.zeros(args.dim_att)
+            for n in range(args.dim_att):
                 zigzag = ((n + 1) % 3 - 1) * 0.1
-                tmp[n] = ratio_0_to_1 * (1 - (n / (args['dim_att'] - 1))) + zigzag
+                tmp[n] = ratio_0_to_1 * (1 - (n / (args.dim_att - 1))) + zigzag
             self.time_faaaa = nn.Parameter(tmp.reshape(self.n_head, self.head_size))
 
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-        self.receptance = nn.Linear(args['n_embd'], args['dim_att'], bias=False)
-        self.key = nn.Linear(args['n_embd'], args['dim_att'], bias=False)
-        self.value = nn.Linear(args['n_embd'], args['dim_att'], bias=False)
-        self.output = nn.Linear(args['dim_att'], args['n_embd'], bias=False)
-        self.gate = nn.Linear(args['n_embd'], args['dim_att'], bias=False)
-        self.ln_x = nn.GroupNorm(self.n_head, args['dim_att'], eps=(1e-5)*(args['head_size_divisor']**2))
-    
+        self.receptance = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.key = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.value = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.output = nn.Linear(args.dim_att, args.n_embd, bias=False)
+        self.gate = nn.Linear(args.n_embd, args.dim_att, bias=False)
+        self.ln_x = nn.GroupNorm(self.n_head, args.dim_att, eps=(1e-5)*(args.head_size_divisor**2))
+
 ########################################################################################################
 # RWKV ChannelMix
 ########################################################################################################
@@ -76,16 +76,16 @@ class RWKV_CMix_x060(nn.Module):
         self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
 
         with torch.no_grad():  # fancy init of time_mix
-            ratio_1_to_almost0 = 1.0 - (layer_id / args['n_layer'])  # 1 to ~0
-            ddd = torch.ones(1, 1, args['n_embd'])
-            for i in range(args['n_embd']):
-                ddd[0, 0, i] = i / args['n_embd']
+            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layer)  # 1 to ~0
+            ddd = torch.ones(1, 1, args.n_embd)
+            for i in range(args.n_embd):
+                ddd[0, 0, i] = i / args.n_embd
             self.time_maa_k = nn.Parameter(1.0 - torch.pow(ddd, ratio_1_to_almost0))
             self.time_maa_r = nn.Parameter(1.0 - torch.pow(ddd, ratio_1_to_almost0))
 
-        self.key = nn.Linear(args['n_embd'], args['dim_ffn'], bias=False)
-        self.receptance = nn.Linear(args['n_embd'], args['n_embd'], bias=False)
-        self.value = nn.Linear(args['dim_ffn'], args['n_embd'], bias=False)
+        self.key = nn.Linear(args.n_embd, args.dim_ffn, bias=False)
+        self.receptance = nn.Linear(args.n_embd, args.n_embd, bias=False)
+        self.value = nn.Linear(args.dim_ffn, args.n_embd, bias=False)
 
     def forward(self, x):
         xx = self.time_shift(x) - x
@@ -107,15 +107,15 @@ class Block(nn.Module):
         self.args = args
         self.layer_id = layer_id
 
-        self.ln1 = nn.LayerNorm(args['n_embd'])
-        self.ln2 = nn.LayerNorm(args['n_embd'])
+        self.ln1 = nn.LayerNorm(args.n_embd)
+        self.ln2 = nn.LayerNorm(args.n_embd)
 
         if self.layer_id == 0:
-            self.ln0 = nn.LayerNorm(args['n_embd'])
+            self.ln0 = nn.LayerNorm(args.n_embd)
 
         self.att = RWKV_Tmix_x060(args, layer_id)
         self.ffn = RWKV_CMix_x060(args, layer_id)
-        
+
     def forward(self, x):
 
         if self.layer_id == 0:
@@ -129,21 +129,20 @@ class Block(nn.Module):
 ########################################################################################################
 # RWKV Model
 ########################################################################################################
-
 class RWKV_x060(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        args['dim_att'] = args['n_embd']
-        args['dim_ffn'] = int((args['n_embd'] * 3.5) // 32 * 32)
-        assert args['n_embd'] % 32 == 0
-        assert args['dim_att'] % 32 == 0
-        assert args['dim_ffn'] % 32 == 0
+        args.dim_att = args.n_embd
+        args.dim_ffn = int((args.n_embd * 3.5) // 32 * 32)
+        assert args.n_embd % 32 == 0
+        assert args.dim_att % 32 == 0
+        assert args.dim_ffn % 32 == 0
 
-        self.emb = nn.Embedding(args['vocab_size'], args['n_embd'])
-        self.blocks = nn.ModuleList([Block(args, i) for i in range(args['n_layer'])])
-        self.ln_out = nn.LayerNorm(args['n_embd'])
-        self.head = nn.Linear(args['n_embd'], args['vocab_size'], bias=False)
+        self.emb = nn.Embedding(args.vocab_size, args.n_embd)
+        self.blocks = nn.ModuleList([Block(args, i) for i in range(args.n_layer)])
+        self.ln_out = nn.LayerNorm(args.n_embd)
+        self.head = nn.Linear(args.n_embd, args.vocab_size, bias=False)
 
         self.init_params() # !!! When you train RWKV from scratch, try my initialization for best performance !!!
 
@@ -158,7 +157,7 @@ class RWKV_x060(nn.Module):
         x = self.head(x)
 
         return x
-    
+
     def init_params(self):
         m = self.state_dict()
         n_params = 0
@@ -175,7 +174,7 @@ class RWKV_x060(nn.Module):
             scale = 1.0
             if "ln_" in n or ".ln" in n or "time_" in n or n.endswith('_w') or n.endswith('_w1') or n.endswith('_w2') or n.endswith('_bias'):
                 if 'ln_x.weight' in n:
-                    layer_scale = (1+int(n.split('.')[1])) / self.args['n_layer']
+                    layer_scale = (1+int(n.split('.')[1])) / self.args.n_layer
                     m[n] = (p * 0.0) + (layer_scale ** 0.7)
                 else:
                     m[n] = p
@@ -187,8 +186,8 @@ class RWKV_x060(nn.Module):
                 print(f" [scale {scale}]")
             elif n == "head.weight":
                 m[n] = p
-                if self.args['vocab_size'] > self.args['n_embd']:
-                    scale = 0.5 * math.sqrt(self.args['vocab_size'] / self.args['n_embd'])
+                if self.args.vocab_size > self.args.n_embd:
+                    scale = 0.5 * math.sqrt(self.args.vocab_size / self.args.n_embd)
                 else:
                     scale = 0.5
                 nn.init.orthogonal_(m[n], gain=scale)
@@ -215,7 +214,7 @@ class RWKV_x060(nn.Module):
                     nn.init.orthogonal_(m[n], gain=scale)
 
             n_params += m[n].numel()
-        
+
         # print('model params', n_params)
         gc.collect()
 
@@ -226,7 +225,7 @@ def device_checker(args):
     if torch.cuda.is_available():
         args.device = 'cuda'
         return args
-    
+
     else:
         try:
             import torch_musa
