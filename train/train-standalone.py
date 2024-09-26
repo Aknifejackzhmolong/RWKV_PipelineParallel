@@ -61,7 +61,7 @@ class TextDataset(IterableDataset):
         file_path = self.file_path
         tokenizer = self.tokenizer
         token_limit = 128
-        start = 0
+        start = 512
         with open(file_path, "r", encoding='utf8') as file:
             while start < 12800:
                 end = start + token_limit
@@ -82,19 +82,6 @@ class TokenLimitModel(nn.Module):
         self.model = model
         self.loss_fn_ = loss_fn
         self.token_limit = token_limit
-    def loss_fn(self,x_out,y,single,length_list,start,end):
-        num_token = 0
-        x_out_list = []
-        y_list = []
-        for i,num in enumerate(length_list):
-            end_ = min(end,num)
-            x_out_list.append(x_out[i,start:end_])
-            y_list.append(y[i,start:end_])
-            num_token += end_ - start
-        x_out = torch.concatenate(tuple(x_out_list),dim=0)
-        y = torch.concatenate(tuple(y_list),dim=0)
-        # print(x_out.size(),y.size())
-        return self.loss_fn_(x_out, y) + single, num_token
     def forward(self, x, y, length_list, state):
         分段长度 = self.token_limit
         num_tok = length_list.sum()
@@ -104,12 +91,19 @@ class TokenLimitModel(nn.Module):
         loop_size = len(input_mask) - 1
         loss_stask = []
         loss_total = 0.0
+        y = y.clone()
+        for i,num in enumerate(length_list):
+            y[i,num:] = -1
         for i in range(loop_size):
             start,end = tuple(input_mask[i:i+2])
             x_out,state,single = OffloadLayer.apply(self.model.forward_parallel,x[:,start:end],state)
-            loss,num_token = self.loss_fn(x_out,y,single,length_list,start,end)
+            x_out = torch.concatenate(tuple(x_out), dim=0)
+            y_out = torch.concatenate(tuple(y[:,start:end]), dim=0)
+            x_out = x_out[y_out != -1]
+            y_out = y_out[y_out != -1]
+            loss = self.loss_fn_(x_out,y_out) + single
             loss_stask.append(loss)
-            loss_total += loss.item() * num_token
+            loss_total += loss.item() * len(y_out)
         for i,loss in enumerate(reversed(loss_stask)):
             loss.backward(retain_graph=True)
         return loss_total / num_tok
@@ -132,7 +126,7 @@ def main(args:ModelArgs):
 
     file_path = args.DATASET_PATH  # 替换为你的文本文件路径
     # 设置续写的初始字符串和参数
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=5e-3)
     criterion = nn.CrossEntropyLoss()
     start_time = time.time()
     model.train()
@@ -142,7 +136,7 @@ def main(args:ModelArgs):
     state.requires_grad = True
     model = TokenLimitModel(model,criterion,args.token_limit)
     with torch.autograd.set_detect_anomaly(True):
-        with tqdm(dataloader, total=1048575) as tbar:
+        with tqdm(dataloader, total=13e6 // args.batch_size) as tbar:
             for i, (token, length_list) in enumerate(tbar):
                 token = token.cuda()
                 x = token[:,:-1]
@@ -156,7 +150,7 @@ def main(args:ModelArgs):
                 elif args.device == 'musa':
                     torch.musa.empty_cache()
                 if i % 5000 == 0:
-                    model.model.save_model(f'weight/checkpoint-small-{i}.pth')
+                    model.model.save_model(f'weight/checkpoint-small-75-{i}.pth')
 
     # 同步GPU执行位置
     end_time = time.time()

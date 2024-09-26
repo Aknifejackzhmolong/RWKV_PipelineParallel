@@ -30,7 +30,7 @@ def add_cors_headers(response):
 # 初始化模型和分词器
 def init_model():
     # 模型参数配置
-    with open("train/params.json", "r") as f:
+    with open("train/params-small.json", "r") as f:
         args = ModelArgs.from_dict(json.load(f))
         args = device_checker(args)
         device = args.device
@@ -43,27 +43,27 @@ def init_model():
     # 初始化状态
     global_state = model.init_state(1)
 
-    tokenizer = RWKV_TOKENIZER("asset/rwkv_vocab_v20230424.txt")
+    tokenizer = RWKV_TOKENIZER(args.TOKENIZER_PATH)
     print("Done")
     print(f"Model name: {args.MODEL_NAME.split('/')[-1]}")
     return model, tokenizer, global_state, device, args
-    
+
 def format_messages_to_prompt(messages):
     formatted_prompt = ""
-    
+
     # Define the roles mapping to the desired names
     role_names = {
         "system": "System",
         "assistant": "Assistant",
         "user": "User"
     }
-    
+
     # Iterate through the messages and format them
     for message in messages:
         role = role_names.get(message['role'], 'Unknown')  # Get the role name, default to 'Unknown'
         content = message['content']
         formatted_prompt += f"{role}: {content}\n\n"  # Add the role and content to the prompt with newlines
-        
+
     formatted_prompt += "Assistant: "
     return formatted_prompt
 
@@ -91,7 +91,7 @@ def generate_text(prompt: str, temperature=1.5, top_p=0.1, max_tokens=2048, pres
     state = state.to(device)
     prompt_tokens = len(encoded_input[0])
     stop_token = tokenizer.encode(stop)[0]
-    
+
     if args.parallel:
         with torch.no_grad():
             token_out, state = model.forward_parallel_slices(token, state, slice_len=512)
@@ -104,8 +104,8 @@ def generate_text(prompt: str, temperature=1.5, top_p=0.1, max_tokens=2048, pres
                 out, state = model.forward(t, state)
 
     del token
-    
-    
+
+
     completion_tokens = 0
     if_max_token = True
     generated_texts = ''
@@ -123,20 +123,21 @@ def generate_text(prompt: str, temperature=1.5, top_p=0.1, max_tokens=2048, pres
         )
         with torch.no_grad():
             out, state = model.forward(token_sampled, state)
-        
+
         # 判断是否达到停止条件
         last_text = tokenizer.decode(token_sampled.unsqueeze(1).cpu().tolist())[0]
         generated_texts += last_text
         completion_tokens += 1
         print(last_text, end='')
-        
-        
+
+
         # 如果末尾含有 stop 列表中的字符串，则停止生成
         if generated_texts.endswith(tuple(stop)):
-            generated_texts = generated_texts.replace(stop_token, "") # 替换掉终止token
+            for stop_word in stop:
+                generated_texts = generated_texts.replace(stop_word, "") # 替换掉终止token
             if_max_token = False
             break
-            
+
     total_tokens = prompt_tokens + completion_tokens
     usage = {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": total_tokens}
     del state
@@ -158,20 +159,20 @@ def generate_text_stream(prompt: str, temperature=1.5, top_p=0.1, max_tokens=204
                 token_out, state = model.forward_parallel_slices(token, state, slice_len=512)
                 out = token_out[:, -1]  # 取最后一个生成的token
         else:
-        # 预填充状态
+            # 预填充状态
             token_temp = token.transpose(0, 1).to(device)
             with torch.no_grad():
                 for t in token_temp:
                     out, state = model.forward(t, state)
             del token_temp  # 释放内存
-        del token
+        # del token
     except GeneratorExit:
         # 客户端断开连接，停止生成并清理资源
         clear_cache()
         return
 
     generated_texts = ''
-    generated_tokens = None
+    generated_tokens = token[0]
     completion_tokens = 0
     if_max_token = True
     freq_dict = None
@@ -187,11 +188,11 @@ def generate_text_stream(prompt: str, temperature=1.5, top_p=0.1, max_tokens=204
         )
         with torch.no_grad():
             out, state = model.forward(token_sampled, state)
-        
+
         last_text = tokenizer.decode(token_sampled.unsqueeze(1).cpu().tolist())[0]
         generated_texts += last_text
         completion_tokens += 1
-        
+
         if generated_texts.endswith(tuple(stop)):
             if_max_token = False
             response = {
@@ -222,7 +223,7 @@ def generate_text_stream(prompt: str, temperature=1.5, top_p=0.1, max_tokens=204
                 # 客户端断开连接，停止生成并清理资源
                 clear_cache()
                 return
-            
+
     if if_max_token:
         response = {
             "object": "chat.completion.chunk",
@@ -234,10 +235,10 @@ def generate_text_stream(prompt: str, temperature=1.5, top_p=0.1, max_tokens=204
             }]
         }
         yield f"data: {json.dumps(response)}\n\n"
-    
+
     del state
-    clear_cache()    
-    yield "data: [DONE]"         
+    clear_cache()
+    yield "data: [DONE]"
 
 
 def clear_cache():
@@ -266,16 +267,17 @@ def create_completion():
         data = request.json
         model = data.get('model', 'rwkv')
         messages = data['messages']
+        print(data)
         stream = data.get('stream', True)
-        temperature = data.get('temperature', 1.5)
-        top_p = data.get('top_p', 0.1)
-        presence_penalty = data.get('presence_penalty', 0.0)
-        frequency_penalty = data.get('frequency_penalty', 0.0)
+        temperature = data.get('temperature', 0.8)
+        top_p = data.get('top_p', 0.3)
+        presence_penalty = data.get('presence_penalty', 0.5)
+        frequency_penalty = data.get('frequency_penalty', 0.5)
         max_tokens = data.get('max_tokens', 2048)
         stop = data.get('stop', ['\n\nUser', '<|endoftext|>'])
 
         prompt = format_messages_to_prompt(messages)
-        
+
         # Determine if streaming is enabled
         if stream:
             """
@@ -285,7 +287,7 @@ def create_completion():
             return Response(generate(), content_type='text/event-stream')
             """
             response = Response(stream_with_context(generate_text_stream(prompt, temperature=temperature, top_p=top_p, presence_penalty=presence_penalty,
-                                                 frequency_penalty=frequency_penalty, max_tokens=max_tokens, stop=stop)), 
+                                                 frequency_penalty=frequency_penalty, max_tokens=max_tokens, stop=stop)),
                                 content_type='text/event-stream')
             response.timeout = None  # 设置超时时间为无限制
             return response
@@ -310,7 +312,7 @@ def create_completion():
                 "usage": usage
             }
             clear_cache()
-            return jsonify(response)      
+            return jsonify(response)
     except Exception as e:
         clear_cache()
         return str(e), 500
